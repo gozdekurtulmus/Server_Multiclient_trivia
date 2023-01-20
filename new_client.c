@@ -42,8 +42,7 @@ int main(int argc, char *argv[])
 
     portno = atoi(argv[2]);
     serv_addr.sin_family = AF_INET;
-    inet_addr(argv[2], &serv_addr.sin_addr.s_addr);
-    // serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(portno);
 
     n = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
@@ -61,6 +60,16 @@ int main(int argc, char *argv[])
     // Send client's name
     bzero(buffer, 256);
     n = read(sockfd, buffer, 255);
+    if (n < 0)
+    {
+        error("Error on reading from socket");
+    }
+    if (strcmp(buffer, "SERVER_FULL") == 0)
+    {
+        printf("Server is full, please try again later.\n");
+        close(sockfd);
+        exit(0);
+    }
     fprintf(stderr, "%s", buffer);
     fgets(buffer, 255, stdin);
 
@@ -75,7 +84,6 @@ int main(int argc, char *argv[])
     {
         bzero(buffer, 256);
         n = read(sockfd, buffer, 255);
-        fprintf(stderr, "%s", buffer);
         if (n < 0)
         {
             error("ERROR reading from socket");
@@ -86,6 +94,18 @@ int main(int argc, char *argv[])
             exit(1);
         }
 
+        if(strcmp(buffer,"GAME_FINISHED") == 0)
+        {
+
+            bzero(buffer, 256);
+            n = read(sockfd, buffer, 255);
+            fprintf(stderr, "%s", buffer);
+            close(sockfd);
+            exit(1);
+        }
+
+        // Show the question
+        fprintf(stderr, "%s", buffer);
         // Send answer to server
         fprintf(stderr, "\nAnswer: ");
         bzero(buffer, 256);
