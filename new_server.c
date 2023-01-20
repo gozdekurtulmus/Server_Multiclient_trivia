@@ -15,7 +15,7 @@
 #include <signal.h>
 
 #define MAX_CLIENTS 2
-#define MAX_QUESTIONS 5
+#define MAX_QUESTIONS 7
 
 pthread_mutex_t lock;
 
@@ -78,10 +78,13 @@ void game_finished(int* newsockfd, struct Client* clients, int client_index, int
     sleep(1);
 
     bzero(buffer, 256);
+    pthread_mutex_lock(&lock);
     for (int i = 0; i < *shared_connection_counter; i++)
     {
-        sprintf(buffer + strlen(buffer), "\n%s: %i points\n", clients[i].name, clients[i].questions_known);
+        sprintf(buffer + strlen(buffer), "\n%s: %i points", clients[i].name, clients[i].questions_known);
     }
+    pthread_mutex_unlock(&lock);
+    
 
     sprintf(buffer + strlen(buffer), "\nGame is finished.");
     n = write(*newsockfd, buffer, strlen(buffer));
@@ -96,19 +99,20 @@ void game_finished(int* newsockfd, struct Client* clients, int client_index, int
 
 }
 
-void client_disconnected(int* newsockdf, int* shared_connection_counter, struct Client* clients, int client_index)
+void client_disconnected(int* newsockfd, int* shared_connection_counter, struct Client* clients, int client_index)
 {
 
-    close(*newsockdf);
-    pthread_mutex_lock(&lock);
-    *shared_connection_counter-=1;
-    pthread_mutex_unlock(&lock);
-
     fprintf(stderr,"%s is disconnected.\n", clients[client_index].name);
-
+    pthread_mutex_lock(&lock);
     strcpy(clients[client_index].name,"NOTINITIALIZED");
+    *shared_connection_counter-=1;
     clients[client_index].questions_known = 0;
     clients[client_index].knew_answer = false;
+    pthread_mutex_unlock(&lock);
+
+    close(*newsockfd);
+
+
 
 }
 
@@ -117,11 +121,12 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
     struct sockaddr_in cli_addr;
     socklen_t clilen;
     char buffer[256];
+    bool disconnected = false;
 
     int newsockfd, question, client_index,n;
 
     question = 0;
-    while (question < MAX_QUESTIONS)
+    while (question < MAX_QUESTIONS && disconnected == false)
     {
 
         // Accept new connection
@@ -140,8 +145,15 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
         {
 
             pthread_mutex_lock(&lock); // Acquire the lock
-            client_index = *shared_connection_counter;
             *shared_connection_counter += 1;
+            for (int i = 0; i < MAX_CLIENTS; i++)
+            {
+                if(strcmp(clients[i].name, "NOTINITIALIZED") == 0)
+                {
+                    client_index =i;
+                    break;
+                }
+            }
             printf("Client connected to child process %i.\n", getpid());
             pthread_mutex_unlock(&lock); // Release the lock
 
@@ -159,7 +171,9 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
 
             if (n < 0)
             {
-                error("Error reading from socket!\n");
+                disconnected = true;
+                client_disconnected(&newsockfd, shared_connection_counter, clients, client_index);
+                break;
             }
 
             // Using shared memory here, for adding the connected user and giving an index to it.
@@ -167,6 +181,11 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
             // Locks are used for this purpose.
 
             pthread_mutex_lock(&lock); // Acquire the lock
+
+            strcpy(clients[client_index].name, buffer);
+            clients[client_index].questions_known = 0;
+            clients[client_index].knew_answer = false;
+
             question = *shared_question_number;
             strcpy(clients[client_index].name, buffer);
             clients[client_index].questions_known = 0;
@@ -190,7 +209,9 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
                 n = read(newsockfd, buffer, 255);
                 if (n < 0)
                 {
-                    error("Error reading from socket!\n");
+                    disconnected = true;
+                    client_disconnected(&newsockfd, shared_connection_counter, clients, client_index);
+                    break;
                 }
 
                 clients[client_index].knew_answer = strcmp(buffer, answers[question]) == 0;
@@ -203,21 +224,17 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
                     clients[client_index].questions_known += 1;
                 }
 
-                printf("Point of %s: %i\n", clients[client_index].name, clients[client_index].questions_known);
-
                 while (*shared_answer_counter != *shared_connection_counter)
-                {
-                    sleep(1 / 2);
-                }
 
                 bzero(buffer, 256);
-                for (int i = 0; i < *shared_connection_counter; i++)
+                pthread_mutex_lock(&lock);
+                for (int i = 0; i < MAX_CLIENTS; i++)
                 {
-                    sprintf(buffer + strlen(buffer), "\n%s: %i points", clients[i].name, clients[i].questions_known);
+                    if (strcmp(clients[i].name, "NOTINITIALIZED") != 0)
+                    {
+                        sprintf(buffer + strlen(buffer), "\n%s: %i points", clients[i].name, clients[i].questions_known);
+                    }
                 }
-
-                sleep(1);
-                pthread_mutex_lock(&lock); // Acquire the lock
                 *shared_question_number = question;
                 *shared_answer_counter = 0;
                 pthread_mutex_unlock(&lock); // Release the lock
@@ -240,7 +257,10 @@ void client_handler(int *sockfd, int *shared_answer_counter, int *shared_connect
         }
     }
 
-    game_finished(&newsockfd, clients, client_index, shared_connection_counter);
+    if (!disconnected)
+    {
+        game_finished(&newsockfd, clients, client_index, shared_connection_counter);
+    }
 }
 
 int main(int argc, char *argv[])
